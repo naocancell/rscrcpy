@@ -1,0 +1,4 @@
+#!/bin/sh
+# fake adb: succeed for push/forward; for "shell" run the mock server
+for a in "$@"; do case "$a" in shell) cd /workspace/rscrcpy/mock && exec python3 mock_server.py ;; esac; done
+exit 0

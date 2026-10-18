@@ -1,0 +1,4 @@
+target/
+mock/*.h264
+mock/*.log
+mock/*.png
