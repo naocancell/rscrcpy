@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/rscrcpy-core", "crates/rscrcpy-cli"]
-default-members = ["crates/rscrcpy-cli"]
+members = ["crates/rscrcpy-core", "crates/rscrcpy-cli", "crates/rscrcpy-gui"]
+default-members = ["crates/rscrcpy-gui"]
 
 [workspace.package]
 version = "0.2.0"
