@@ -4,6 +4,11 @@
 Streams test.h264 in a loop with the scrcpy v5 framing (dummy byte, device meta,
 codec id, session packet, config + media packets) and logs every control message
 it receives as one JSON object per line in control.log.
+
+MOCK_CORRUPT_AT=N truncates the N-th frame to provoke a decoding error; after that, key
+frames are withheld (like Android encoders, which send one only every 10 s) until the
+client sends RESET_VIDEO, which restarts the stream with a session packet, the config
+and an IDR frame.
 """
 import argparse, json, os, socket, struct, sys, threading, time
 
@@ -47,8 +52,13 @@ video.sendall(b"\x00")  # dummy byte
 control, _ = srv.accept()
 video.sendall(b"Mock Phone".ljust(64, b"\x00"))
 video.sendall(b"h264")
-video.sendall(struct.pack(">III", 0x80000000, width, height))  # session packet
-video.sendall(struct.pack(">QI", 1 << 62, len(config)) + config)
+
+def send_session():
+    video.sendall(struct.pack(">III", 0x80000000, width, height))  # session packet
+    video.sendall(struct.pack(">QI", 1 << 62, len(config)) + config)
+
+send_session()
+reset = threading.Event()
 
 def recv_exact(n):
     b = b""
@@ -87,6 +97,8 @@ def read_control():
             elif t in (5, 6, 7, 11, 17):
                 record(type={5: "expand_notifications", 6: "expand_settings", 7: "collapse_panels",
                              11: "rotate", 17: "reset_video"}[t])
+                if t == 17:
+                    reset.set()
             else:
                 record(type="unknown", value=t)
                 return
@@ -95,14 +107,27 @@ def read_control():
 
 threading.Thread(target=read_control, daemon=True).start()
 
-pts = 0
+corrupt_at = int(os.environ.get("MOCK_CORRUPT_AT", "0"))
+pts, sent, i, broken = 0, 0, 0, False
 try:
     while True:
-        for n, key in frames:
-            flags = pts | ((1 << 61) if key else 0)
-            video.sendall(struct.pack(">QI", flags, len(n)) + n)
-            pts += 33333
-            time.sleep(1 / 30)
+        if reset.is_set():
+            reset.clear()
+            i, broken = 0, False
+            send_session()
+        n, key = frames[i]
+        i = (i + 1) % len(frames)
+        if broken and key:
+            continue
+        sent += 1
+        if sent == corrupt_at:
+            n = n[: len(n) // 3]
+            broken = True
+            record(type="mock_corrupt", frame=sent)
+        flags = pts | ((1 << 61) if key else 0)
+        video.sendall(struct.pack(">QI", flags, len(n)) + n)
+        pts += 33333
+        time.sleep(1 / 30)
 except OSError:
     pass
 sys.exit(0)

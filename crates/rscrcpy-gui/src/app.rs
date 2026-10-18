@@ -96,10 +96,13 @@ pub struct App {
 
 fn spawn_task(tx: &Sender<Task>, ctx: &egui::Context, f: impl FnOnce() -> Task + Send + 'static) {
     let (tx, ctx) = (tx.clone(), ctx.clone());
-    thread::spawn(move || {
+    let spawned = thread::Builder::new().name("task".into()).spawn(move || {
         let _ = tx.send(f());
         ctx.request_repaint();
     });
+    if let Err(e) = spawned {
+        log::error!("无法创建后台线程: {e}");
+    }
 }
 
 fn err_string(e: anyhow::Error) -> String {
@@ -161,11 +164,15 @@ impl App {
     }
 
     fn info(&mut self, text: impl Into<String>) {
-        self.status = Some(Status { text: text.into(), error: false });
+        let text = text.into();
+        log::info!("{text}");
+        self.status = Some(Status { text, error: false });
     }
 
     fn error(&mut self, text: impl Into<String>) {
-        self.status = Some(Status { text: text.into(), error: true });
+        let text = text.into();
+        log::warn!("{text}");
+        self.status = Some(Status { text, error: true });
     }
 
     fn adb(&self) -> Adb {
@@ -249,6 +256,12 @@ impl App {
                     match r {
                         Ok(devices) => {
                             self.adb_error = None;
+                            let serials = |d: &[DeviceInfo]| {
+                                d.iter().map(|d| format!("{} ({})", d.serial, d.state)).collect::<Vec<_>>()
+                            };
+                            if serials(&devices) != serials(&self.devices) {
+                                log::info!("设备列表: [{}]", serials(&devices).join(", "));
+                            }
                             self.devices = devices;
                             if self.selected_device().is_none() {
                                 self.selected = self.devices.iter().find(|d| d.is_ready()).map(|d| d.serial.clone());
@@ -262,6 +275,9 @@ impl App {
                             }
                         }
                         Err(e) => {
+                            if self.adb_error.as_ref() != Some(&e) {
+                                log::warn!("获取设备列表失败: {e}");
+                            }
                             self.adb_error = Some(e);
                             self.devices.clear();
                         }
@@ -536,6 +552,13 @@ impl App {
                  拖入 APK 安装，拖入其他文件传到 /sdcard/Download",
             );
         });
+        let dir = rscrcpy_core::logging::log_dir();
+        if ui.button("打开日志目录").on_hover_text(dir.display().to_string()).clicked() {
+            match rscrcpy_core::logging::open_in_file_manager(&dir) {
+                Ok(()) => self.info(format!("日志目录: {}", dir.display())),
+                Err(e) => self.error(format!("无法打开日志目录 {}: {e}", dir.display())),
+            }
+        }
     }
 
     fn settings(&mut self, ui: &mut egui::Ui) {
@@ -623,6 +646,10 @@ impl App {
         if button(ui, "截图", "保存当前画面为 PNG") {
             self.save_screenshot();
         }
+        if button(ui, "刷新画面", "画面花屏或卡住时，让手机重新发送关键帧") {
+            log::info!("手动请求关键帧");
+            c.reset_video();
+        }
         if button(ui, "复制", "复制手机上选中的内容到电脑剪贴板（Ctrl+C）") {
             c.request_clipboard(CopyKey::Copy);
         }
@@ -638,8 +665,12 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let (Some(m), Some(s)) = (&self.meter, self.session()) {
-                    let errors = s.stats().decode_errors;
+                    let stats = s.stats();
+                    let errors = stats.decode_errors;
                     let mut text = format!("{:.0} fps · {:.1} Mbps", m.fps, m.mbps);
+                    if stats.recovering {
+                        text.push_str(" · 正在恢复画面…");
+                    }
                     if errors > 0 {
                         text.push_str(&format!(" · 解码错误 {errors}"));
                     }

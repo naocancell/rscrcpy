@@ -45,7 +45,16 @@ fn parse_args() -> Result<Args> {
 }
 
 fn main() -> Result<()> {
-    let args = parse_args()?;
+    let log_file = rscrcpy_core::logging::init("rscrcpy");
+    log::info!(
+        "rscrcpy {} 启动（{} {}），日志文件: {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        log_file.as_deref().map_or("无".into(), |p| p.display().to_string())
+    );
+    let args = parse_args().inspect_err(|e| log::error!("{e:#}"))?;
+    log::info!("adb: {}，server: {}", args.opts.adb.display(), args.opts.server_path.display());
     let native = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("rscrcpy")
@@ -62,5 +71,8 @@ fn main() -> Result<()> {
             Ok(Box::new(app::App::new(cc.egui_ctx.clone(), args)))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("{e}"))
+    .map_err(|e| {
+        log::error!("窗口创建失败: {e}");
+        anyhow::anyhow!("{e}")
+    })
 }

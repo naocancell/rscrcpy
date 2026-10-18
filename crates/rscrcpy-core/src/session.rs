@@ -6,6 +6,7 @@ use crate::device_msg::{DeviceMsg, read_device_msg};
 use crate::server::{self, ServerProcess, Tunnel};
 use crate::video::{self, Frame, Shared};
 use anyhow::{Context, Result};
+use log::{debug, info, warn};
 use std::io::Read;
 use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
@@ -74,6 +75,8 @@ pub struct Stats {
     pub frames: u64,
     pub bytes: u64,
     pub decode_errors: u64,
+    /// Waiting for a key frame after a decoding error (the picture is frozen meanwhile).
+    pub recovering: bool,
 }
 
 pub struct Session {
@@ -101,8 +104,9 @@ fn connect_video(port: u16, server: &mut ServerProcess) -> Result<TcpStream> {
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
             s.set_read_timeout(Some(Duration::from_secs(2)))?;
             let mut b = [0u8; 1];
-            if s.read_exact(&mut b).is_ok() {
-                return Ok(s);
+            match s.read_exact(&mut b) {
+                Ok(()) => return Ok(s),
+                Err(e) => debug!("视频连接尚未就绪: {e}"),
             }
         }
         if Instant::now() > deadline {
@@ -122,16 +126,39 @@ impl Session {
     /// Pushes and starts the server, connects and spawns the worker threads.
     /// Blocks for up to ~10 s; call it from a background thread in a GUI.
     pub fn start(opts: &Options, sink: EventSink) -> Result<Session> {
+        let result = Self::connect(opts, sink);
+        if let Err(e) = &result {
+            warn!("连接失败: {e:#}");
+        }
+        result
+    }
+
+    fn connect(opts: &Options, sink: EventSink) -> Result<Session> {
+        let t0 = Instant::now();
+        info!(
+            "开始投屏: 设备 {}，分辨率上限 {}，码率 {} Mbps，帧率上限 {}，Baseline {}，保持唤醒 {}",
+            opts.serial.as_deref().unwrap_or("（默认）"),
+            opts.max_size,
+            opts.bit_rate as f64 / 1e6,
+            opts.max_fps,
+            opts.h264_baseline,
+            opts.stay_awake
+        );
         server::check_server_file(&opts.server_path)?;
         let adb = Adb::new(&opts.adb).with_serial(opts.serial.as_deref());
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         let scid = (std::process::id() ^ nanos.subsec_nanos()) & 0x7fff_ffff;
 
         adb.push(&opts.server_path, server::DEVICE_SERVER_PATH).context("推送 scrcpy-server 到设备失败")?;
+        debug!("已推送 scrcpy-server（{} ms）", t0.elapsed().as_millis());
         let tunnel = server::open_tunnel(&adb, scid, opts.ports.clone())?;
-        let mut srv = ServerProcess::spawn(&adb, &server::server_args(scid, opts))?;
+        info!("adb 转发端口 {}", tunnel.port);
+        let args = server::server_args(scid, opts);
+        debug!("server 参数: {}", args.join(" "));
+        let mut srv = ServerProcess::spawn(&adb, &args)?;
 
         let mut video = connect_video(tunnel.port, &mut srv)?;
+        debug!("视频连接已建立（{} ms）", t0.elapsed().as_millis());
         let control = TcpStream::connect(("127.0.0.1", tunnel.port)).context("无法建立控制连接")?;
         control.set_nodelay(true)?;
 
@@ -143,20 +170,30 @@ impl Session {
         let codec = read_u32(&mut video).map_err(|e| srv.fail(&format!("读取视频流头失败: {e}")))?;
         video::check_codec(codec).map_err(|e| srv.fail(&e.to_string()))?;
         video.set_read_timeout(None)?;
+        info!("已连接 {device_name}（{} ms）", t0.elapsed().as_millis());
 
+        let controller = Controller::spawn(control.try_clone()?);
         let shared = Arc::new(Shared::default());
         let closing = Arc::new(AtomicBool::new(false));
         let sockets = vec![video.try_clone()?, control.try_clone()?];
         let mut threads = Vec::new();
 
         {
-            let (shared, closing, sink) = (shared.clone(), closing.clone(), sink.clone());
+            let (shared, closing, sink, controller) =
+                (shared.clone(), closing.clone(), sink.clone(), controller.clone());
             threads.push(thread::Builder::new().name("video".into()).spawn(move || {
-                let reason = match video::run(video, &shared, &sink) {
+                let request_key_frame = || {
+                    info!("请求设备重新发送关键帧");
+                    controller.reset_video();
+                };
+                let reason = match video::run(video, &shared, &sink, &request_key_frame) {
                     Ok(()) => "视频流结束".to_string(),
                     Err(e) => format!("{e:#}"),
                 };
-                if !closing.load(Ordering::SeqCst) {
+                if closing.load(Ordering::SeqCst) {
+                    debug!("视频线程结束");
+                } else {
+                    warn!("连接已断开: {reason}");
                     sink(Event::Disconnected(reason));
                 }
             })?);
@@ -165,23 +202,18 @@ impl Session {
             let mut reader = control.try_clone()?;
             threads.push(thread::Builder::new().name("device-msg".into()).spawn(move || {
                 while let Ok(msg) = read_device_msg(&mut reader) {
-                    if let DeviceMsg::Clipboard(text) = msg {
-                        sink(Event::Clipboard(text));
+                    match msg {
+                        DeviceMsg::Clipboard(text) => {
+                            debug!("收到设备剪贴板（{} 字符）", text.chars().count());
+                            sink(Event::Clipboard(text));
+                        }
+                        other => debug!("设备消息: {other:?}"),
                     }
                 }
             })?);
         }
 
-        Ok(Session {
-            device_name,
-            controller: Controller::spawn(control),
-            shared,
-            closing,
-            sockets,
-            threads,
-            _server: srv,
-            _tunnel: tunnel,
-        })
+        Ok(Session { device_name, controller, shared, closing, sockets, threads, _server: srv, _tunnel: tunnel })
     }
 
     pub fn device_name(&self) -> &str {
@@ -212,12 +244,14 @@ impl Session {
             frames: self.shared.frames.load(Ordering::Relaxed),
             bytes: self.shared.bytes.load(Ordering::Relaxed),
             decode_errors: self.shared.decode_errors.load(Ordering::Relaxed),
+            recovering: self.shared.recovering.load(Ordering::Relaxed),
         }
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
+        info!("结束投屏: {}", self.device_name);
         self.closing.store(true, Ordering::SeqCst);
         for s in &self.sockets {
             let _ = s.shutdown(Shutdown::Both);

@@ -113,6 +113,20 @@ impl Adb {
 
     /// Runs adb and returns its stdout, or an error containing its stderr.
     pub fn run<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
+        let t0 = std::time::Instant::now();
+        let line = || args.iter().map(|a| a.as_ref().to_string_lossy()).collect::<Vec<_>>().join(" ");
+        let result = self.run_inner(args);
+        let ms = t0.elapsed().as_millis();
+        match &result {
+            // The GUI lists devices every 2 s: keep that out of the debug level.
+            Ok(_) if args.first().is_some_and(|a| a.as_ref() == "devices") => log::trace!("adb {} ({ms} ms)", line()),
+            Ok(_) => log::debug!("adb {} ({ms} ms)", line()),
+            Err(e) => log::debug!("adb {} 失败（{ms} ms）: {e:#}", line()),
+        }
+        result
+    }
+
+    fn run_inner<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
         let out = self.command().args(args).output().with_context(|| {
             format!(
                 "无法运行 adb（{}）。请安装 Android platform-tools 并加入 PATH，或设置 ADB 环境变量",

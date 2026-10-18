@@ -220,9 +220,11 @@ impl Controller {
             .spawn(move || {
                 let mut buf = Vec::with_capacity(64);
                 for msg in rx {
+                    log::trace!("控制消息: {msg:?}");
                     buf.clear();
                     msg.serialize(&mut buf);
-                    if stream.write_all(&buf).is_err() {
+                    if let Err(e) = stream.write_all(&buf) {
+                        log::debug!("控制连接已关闭: {e}");
                         break;
                     }
                 }

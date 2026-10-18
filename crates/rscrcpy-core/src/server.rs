@@ -78,15 +78,18 @@ pub(crate) fn open_tunnel(adb: &Adb, scid: u32, ports: std::ops::RangeInclusive<
     for port in ports.clone() {
         match adb.run(&["forward", &format!("tcp:{port}"), &remote]) {
             Ok(_) => return Ok(Tunnel { adb: adb.clone(), port }),
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                log::debug!("端口 {port} 转发失败: {e:#}");
+                last_err = Some(e);
+            }
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("empty port range")))
         .with_context(|| format!("端口 {}-{} 都无法转发（被占用？）", ports.start(), ports.end()))
 }
 
-/// The `adb shell app_process ...` process running the server. Its output is echoed to
-/// stderr and the last lines are kept to explain failures.
+/// The `adb shell app_process ...` process running the server. Its output goes to the
+/// log and the last lines are kept to explain failures.
 pub(crate) struct ServerProcess {
     child: Child,
     log: Arc<Mutex<VecDeque<String>>>,
@@ -97,7 +100,17 @@ const LOG_LINES: usize = 40;
 fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<VecDeque<String>>>) {
     let _ = thread::Builder::new().name("server-log".into()).spawn(move || {
         for line in BufReader::new(stream).lines().map_while(Result::ok) {
-            eprintln!("[server] {line}");
+            // The server prefixes its lines with "[server] LEVEL: ".
+            let level = if line.contains("ERROR") || line.contains("Exception") {
+                log::Level::Error
+            } else if line.contains("WARN") {
+                log::Level::Warn
+            } else if line.contains("DEBUG") || line.contains("VERBOSE") {
+                log::Level::Debug
+            } else {
+                log::Level::Info
+            };
+            log::log!(target: "rscrcpy::device", level, "{line}");
             let mut log = log.lock().unwrap();
             if log.len() == LOG_LINES {
                 log.pop_front();

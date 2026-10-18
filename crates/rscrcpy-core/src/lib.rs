@@ -9,6 +9,7 @@ pub mod control;
 pub mod device_msg;
 pub mod geometry;
 pub mod keycode;
+pub mod logging;
 pub mod server;
 mod session;
 pub mod video;

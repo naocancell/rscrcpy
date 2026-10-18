@@ -2874,6 +2874,7 @@ name = "rscrcpy-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "log",
  "minifb",
  "rscrcpy-core",
 ]
@@ -2883,6 +2884,8 @@ name = "rscrcpy-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "log",
  "openh264",
 ]
 
@@ -2893,6 +2896,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "eframe",
+ "log",
  "png",
  "rscrcpy-core",
 ]

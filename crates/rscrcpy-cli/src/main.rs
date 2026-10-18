@@ -61,6 +61,9 @@ impl InputCallback for TextInput {
 }
 
 fn main() -> Result<()> {
+    if let Some(path) = rscrcpy_core::logging::init("rscrcpy-cli") {
+        log::info!("rscrcpy-cli {}，日志文件: {}", env!("CARGO_PKG_VERSION"), path.display());
+    }
     let Args { opts, topmost } = parse_args()?;
     let disconnected = Arc::new(AtomicBool::new(false));
     let flag = disconnected.clone();
