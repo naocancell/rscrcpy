@@ -1,4 +1,26 @@
 #!/bin/sh
-# fake adb: succeed for push/forward; for "shell" run the mock server
-for a in "$@"; do case "$a" in shell) cd /workspace/rscrcpy/mock && exec python3 mock_server.py ;; esac; done
+# Fake adb for testing rscrcpy without a phone: "devices" lists one mock device,
+# "forward" remembers the local port and "shell" runs mock_server.py on it.
+# Usage: ADB=mock/bin/adb cargo run   (Linux/macOS, needs python3)
+here=$(cd "$(dirname "$0")/.." && pwd)
+state="${TMPDIR:-/tmp}/rscrcpy-mock-port"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -s) shift 2 ;;
+        devices)
+            echo "List of devices attached"
+            echo "mock-0001              device product:mock model:Mock_Phone device:mock transport_id:1"
+            exit 0 ;;
+        forward)
+            case "$2" in tcp:*) echo "${2#tcp:}" > "$state" ;; esac
+            exit 0 ;;
+        shell)
+            shift
+            exec python3 "$here/mock_server.py" --port "$(cat "$state")" -- "$@" ;;
+        connect) echo "connected to $2"; exit 0 ;;
+        pair) echo "Successfully paired to $2 [guid=adb-mock]"; exit 0 ;;
+        install) echo "Performing Streamed Install"; echo "Success"; exit 0 ;;
+        *) shift ;;
+    esac
+done
 exit 0
