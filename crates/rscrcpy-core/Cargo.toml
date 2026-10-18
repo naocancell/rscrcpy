@@ -1,0 +1,10 @@
+[package]
+name = "rscrcpy-core"
+description = "scrcpy v5 protocol client core: adb, server launch, video decoding and control messages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+openh264 = "0.9.9"

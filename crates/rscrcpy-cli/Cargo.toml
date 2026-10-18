@@ -1,0 +1,11 @@
+[package]
+name = "rscrcpy-cli"
+description = "Minimal minifb window for rscrcpy (debugging frontend)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+rscrcpy-core.workspace = true
+minifb = "0.29.0"

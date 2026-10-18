@@ -1,9 +1,17 @@
-[package]
-name = "rscrcpy"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "3"
+members = ["crates/rscrcpy-core", "crates/rscrcpy-cli"]
+default-members = ["crates/rscrcpy-cli"]
 
-[dependencies]
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.95"
+
+[workspace.dependencies]
 anyhow = "1.0.104"
-minifb = "0.29.0"
-openh264 = "0.9.9"
+rscrcpy-core = { path = "crates/rscrcpy-core" }
+
+[profile.release]
+lto = "thin"
+strip = true

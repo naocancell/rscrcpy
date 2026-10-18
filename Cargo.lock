@@ -418,11 +418,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "rscrcpy"
-version = "0.1.0"
+name = "rscrcpy-cli"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "minifb",
+ "rscrcpy-core",
+]
+
+[[package]]
+name = "rscrcpy-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
  "openh264",
 ]
 
