@@ -16,6 +16,9 @@ pub const CLIPBOARD_TEXT_MAX_LENGTH: usize = (1 << 18) - 14;
 pub const POINTER_ID_MOUSE: u64 = u64::MAX; // -1
 pub const POINTER_ID_GENERIC_FINGER: u64 = u64::MAX - 1; // -2
 pub const POINTER_ID_VIRTUAL_FINGER: u64 = u64::MAX - 2; // -3
+/// Synthetic finger used by [`crate::swipe::SwipeScroller`] to scroll with
+/// drags; a separate id so it never collides with the left-button finger.
+pub const POINTER_ID_SCROLL_FINGER: u64 = u64::MAX - 3; // -4
 
 /// Key and motion actions (`AKEY_EVENT_ACTION_*` / `AMOTION_EVENT_ACTION_*`).
 pub mod action {

@@ -12,9 +12,11 @@ pub mod keycode;
 pub mod logging;
 pub mod server;
 mod session;
+pub mod swipe;
 pub mod video;
 
 pub use adb::{Adb, DeviceInfo};
 pub use control::{ControlMsg, Controller, CopyKey, Position};
 pub use session::{Event, EventSink, Options, Session, Stats};
+pub use swipe::SwipeScroller;
 pub use video::Frame;

@@ -4,6 +4,7 @@
 mod app;
 mod fonts;
 mod input;
+mod settings;
 
 use anyhow::{Context, Result, bail};
 use rscrcpy_core::Options;

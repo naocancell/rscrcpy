@@ -3,6 +3,7 @@
 
 use crate::Args;
 use crate::input::forward_key;
+use crate::settings::Settings;
 use eframe::egui::{
     self, Align2, Color32, ColorImage, CornerRadius, EventFilter, FontId, ImeEvent, PointerButton, Rect, Sense,
     TextureOptions, Vec2, ViewportCommand, pos2, vec2,
@@ -10,7 +11,9 @@ use eframe::egui::{
 use rscrcpy_core::control::{POINTER_ID_GENERIC_FINGER, POINTER_ID_VIRTUAL_FINGER, action};
 use rscrcpy_core::geometry::container_to_frame;
 use rscrcpy_core::keycode::*;
-use rscrcpy_core::{Adb, Controller, CopyKey, DeviceInfo, Event, EventSink, Frame, Options, Position, Session};
+use rscrcpy_core::{
+    Adb, Controller, CopyKey, DeviceInfo, Event, EventSink, Frame, Options, Position, Session, SwipeScroller,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -30,7 +33,7 @@ enum Phase {
 /// Results of background work (adb calls, session start, file writes).
 enum Task {
     Devices(Result<Vec<DeviceInfo>, String>),
-    Started(u64, Result<Session, String>),
+    Started(u64, Box<Result<Session, String>>),
     Done(Result<String, String>),
     RefreshDevices,
 }
@@ -69,6 +72,7 @@ struct Wireless {
 pub struct App {
     ctx: egui::Context,
     opts: Options,
+    settings: Settings,
     devices: Vec<DeviceInfo>,
     selected: Option<String>,
     adb_error: Option<String>,
@@ -86,6 +90,7 @@ pub struct App {
     fit_window: bool,
     central_size: Vec2,
     touch: Option<Touch>,
+    swipe: Option<SwipeScroller>,
     focus_view: bool,
     preedit: String,
     screen_off: bool,
@@ -137,6 +142,7 @@ impl App {
         Self {
             ctx,
             opts: args.opts,
+            settings: Settings::load(),
             devices: Vec::new(),
             selected,
             adb_error: None,
@@ -154,6 +160,7 @@ impl App {
             fit_window: false,
             central_size: Vec2::ZERO,
             touch: None,
+            swipe: None,
             focus_view: false,
             preedit: String::new(),
             screen_off: false,
@@ -218,7 +225,7 @@ impl App {
             ctx.request_repaint();
         });
         spawn_task(&self.tasks_tx, &self.ctx, move || {
-            Task::Started(id, Session::start(&opts, sink).map_err(err_string))
+            Task::Started(id, Box::new(Session::start(&opts, sink).map_err(err_string)))
         });
         self.phase = Phase::Connecting { serial };
         self.info("正在启动 scrcpy server…");
@@ -233,6 +240,7 @@ impl App {
         self.video = None;
         self.video_size = None;
         self.touch = None;
+        self.swipe = None;
         self.meter = None;
         self.preedit.clear();
     }
@@ -286,16 +294,17 @@ impl App {
                 Task::Started(id, r) => {
                     if id != self.session_id || !matches!(self.phase, Phase::Connecting { .. }) {
                         // Cancelled while starting.
-                        if let Ok(s) = r {
+                        if let Ok(s) = *r {
                             thread::spawn(move || drop(s));
                         }
                         continue;
                     }
-                    match r {
+                    match *r {
                         Ok(s) => {
                             self.info(format!("已连接 {}", s.device_name()));
                             self.ctx
                                 .send_viewport_cmd(ViewportCommand::Title(format!("rscrcpy - {}", s.device_name())));
+                            self.swipe = Some(SwipeScroller::new(s.controller().clone()));
                             self.phase = Phase::Streaming(Box::new(s));
                             self.screen_off = false;
                             self.fit_window = true;
@@ -502,9 +511,17 @@ impl App {
         });
 
         egui::CollapsingHeader::new("投屏参数").show(ui, |ui| {
-            ui.add_enabled_ui(!streaming, |ui| self.settings(ui));
+            ui.add_enabled_ui(!streaming, |ui| self.settings_ui(ui));
             if streaming {
                 ui.label(egui::RichText::new("修改参数需要先断开").weak());
+            }
+            ui.separator();
+            if ui
+                .checkbox(&mut self.settings.swipe_scroll, "滚轮模拟滑动")
+                .on_hover_text("把滚轮转换成手指滑动：瀑布流阅读等只认触摸拖动的 App（如番茄小说）也能用滚轮滚动；关闭则发送鼠标滚轮事件")
+                .changed()
+            {
+                self.settings.save();
             }
         });
 
@@ -546,7 +563,8 @@ impl App {
         ui.add_space(8.0);
         egui::CollapsingHeader::new("操作说明").show(ui, |ui| {
             ui.label(
-                "左键：点击 / 滑动\nCtrl + 左键拖动：双指缩放\n右键 / Esc：返回\n中键：主页\n滚轮：滚动\n\
+                "左键：点击 / 滑动\nCtrl + 左键拖动：双指缩放\n右键 / Esc：返回\n中键：主页\n\
+                 滚轮：滚动（默认模拟手指滑动，「投屏参数」中可切换）\n\
                  F1 主页 · F2 多任务 · F3/F4 音量 · F5 电源\n\
                  键盘输入直接发送到手机（中文经剪贴板粘贴）\nCtrl+C / Ctrl+V：同步剪贴板\n\
                  拖入 APK 安装，拖入其他文件传到 /sdcard/Download",
@@ -561,7 +579,7 @@ impl App {
         }
     }
 
-    fn settings(&mut self, ui: &mut egui::Ui) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let o = &mut self.opts;
         egui::Grid::new("settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             ui.label("分辨率上限");
@@ -820,7 +838,16 @@ impl App {
                         egui::MouseWheelUnit::Page => *delta * 10.0,
                     };
                     // winit: positive x = content moves right; Android: positive hscroll = scroll right.
-                    c.scroll(pos(fp), -ticks.x, ticks.y);
+                    let (h, v) = (-ticks.x, ticks.y);
+                    if self.settings.swipe_scroll
+                        && let Some(s) = &self.swipe
+                    {
+                        // Apps that ignore mouse-wheel events (e.g. waterfall readers)
+                        // still scroll when the wheel plays a synthetic finger drag.
+                        s.scroll(pos(fp), h, v);
+                    } else {
+                        c.scroll(pos(fp), h, v);
+                    }
                 }
                 _ => {}
             }

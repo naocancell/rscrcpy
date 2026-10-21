@@ -2,3 +2,4 @@ target/
 mock/*.log
 mock/*.png
 screenshots/
+.workbuddy/
